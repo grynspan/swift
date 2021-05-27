@@ -10,36 +10,6 @@
 //
 //===----------------------------------------------------------------------===//
 
-@usableFromInline
-@frozen
-internal struct _StackArray64B {
-  private var _storage: (UInt64, UInt64, UInt64, UInt64, UInt64, UInt64, UInt64, UInt64)
-    = (.init(), .init(), .init(), .init(), .init(), .init(), .init(), .init())
-
-  @inlinable
-  internal init() { }
-}
-
-@usableFromInline
-@frozen
-internal struct _StackArray256B {
-  private var _storage: (_StackArray64B, _StackArray64B, _StackArray64B, _StackArray64B)
-    = (.init(), .init(), .init(), .init())
-
-  @inlinable
-  internal init() { }
-}
-
-@usableFromInline
-@frozen
-internal struct _StackArray1KB {
-  private var _storage: (_StackArray256B, _StackArray256B, _StackArray256B, _StackArray256B)
-    = (.init(), .init(), .init(), .init())
-
-  @inlinable
-  internal init() { }
-}
-
 /// Provides scoped access to a raw buffer pointer with the specified byte count
 /// and alignment.
 ///
@@ -71,41 +41,24 @@ internal struct _StackArray1KB {
 /// The buffer pointer passed to `body` (as well as any pointers to elements in
 /// the buffer) must not escape—it will be deallocated when `body` returns and
 /// cannot be used afterward.
-@inlinable
+@_transparent
+@available(macOS 9999, iOS 9999, watchOS 9999, tvOS 9999, *)
 public func withUnsafeUninitializedMutableRawBufferPointer<ReturnType>(byteCount: Int, alignment: Int, _ body: (UnsafeMutableRawBufferPointer) throws -> ReturnType) rethrows -> ReturnType {
-  precondition(byteCount > 0, "Too little uninitialized memory requested.")
-  precondition(alignment > 0, "Nonsensical alignment requested.")
+  _debugPrecondition(byteCount > 0, "Too little uninitialized memory requested.")
+  _debugPrecondition(alignment > 0, "Nonsensical alignment requested.")
 
-  let heapNeeded: Bool
-  if byteCount > MemoryLayout<_StackArray1KB>.size {
-    heapNeeded = true
-  } else if alignment > MemoryLayout<_StackArray1KB>.alignment {
-    heapNeeded = true
+  // FIXME: Builtin.stackAlloc() should return an Optional<Builtin.RawPointer>.
+  let stackPointer = Builtin.stackAlloc(byteCount._builtinWordValue, alignment._builtinWordValue)
+  if Int(Builtin.ptrtoint_Word(stackPointer)) != 0 {
+    defer { _fixLifetime(stackPointer) }
+    return try body(.init(start: UnsafeMutableRawPointer(stackPointer), count: byteCount))
+
   } else {
-    heapNeeded = false
-  }
-
-  if _slowPath(heapNeeded) {
     let heapBuffer = UnsafeMutableRawBufferPointer.allocate(byteCount: byteCount, alignment: alignment)
     defer {
       heapBuffer.deallocate()
     }
     return try body(heapBuffer)
-  }
-
-  // Try to find a reasonably-sized stack buffer to use.
-  if byteCount <= MemoryLayout<UInt64>.size {
-    var buffer = UInt64()
-    return try withUnsafeMutableBytes(of: &buffer, body)
-  } else if byteCount <= MemoryLayout<_StackArray64B>.size {
-    var buffer = _StackArray64B()
-    return try withUnsafeMutableBytes(of: &buffer, body)
-  } else if byteCount <= MemoryLayout<_StackArray256B>.size {
-    var buffer = _StackArray256B()
-    return try withUnsafeMutableBytes(of: &buffer, body)
-  } else {
-    var buffer = _StackArray1KB()
-    return try withUnsafeMutableBytes(of: &buffer, body)
   }
 }
 
@@ -139,16 +92,17 @@ public func withUnsafeUninitializedMutableRawBufferPointer<ReturnType>(byteCount
 /// The buffer pointer passed to `body` (as well as any pointers to elements in
 /// the buffer) must not escape—it will be deallocated when `body` returns and
 /// cannot be used afterward.
-@inlinable
-public func withUnsafeUninitializedMutableBufferPointer<StorageType, ReturnType>(for type: StorageType.Type, capacity: Int, _ body: (UnsafeMutableBufferPointer<StorageType>) throws -> ReturnType) rethrows -> ReturnType {
-  precondition(capacity > 0, "Too little uninitialized memory requested.")
+@_transparent
+@available(macOS 9999, iOS 9999, watchOS 9999, tvOS 9999, *)
+public func withUnsafeUninitializedMutableBufferPointer<StorageType, ReturnType>(to type: StorageType.Type, capacity: Int, _ body: (UnsafeMutableBufferPointer<StorageType>) throws -> ReturnType) rethrows -> ReturnType {
+  _debugPrecondition(capacity > 0, "Too little uninitialized memory requested.")
   let (byteCount, overflowed) = MemoryLayout<StorageType>.stride.multipliedReportingOverflow(by: capacity)
-  precondition(!overflowed, "Too much uninitialized memory requested.")
+  _debugPrecondition(!overflowed, "Too much uninitialized memory requested.")
   let alignment = MemoryLayout<StorageType>.alignment
 
   return try withUnsafeUninitializedMutableRawBufferPointer(byteCount: byteCount, alignment: alignment) { buffer in
     let typedBuffer = buffer.bindMemory(to: StorageType.self)
-    assert(typedBuffer.count >= capacity)
+    _internalInvariant(typedBuffer.count >= capacity, "Bound buffer was smaller than expected.")
     let sizedTypedBuffer = UnsafeMutableBufferPointer(start: typedBuffer.baseAddress, count: capacity)
     return try body(sizedTypedBuffer)
   }
@@ -176,10 +130,11 @@ public func withUnsafeUninitializedMutableBufferPointer<StorageType, ReturnType>
 ///
 /// The pointer passed to `body` must not escape—it will be deallocated when
 /// `body` returns and cannot be used afterward.
-@inlinable
-public func withUnsafeUninitializedMutablePointer<StorageType, ReturnType>(for type: StorageType.Type, _ body: (UnsafeMutablePointer<StorageType>) throws -> ReturnType) rethrows -> ReturnType {
-  return try withUnsafeUninitializedMutableBufferPointer(for: type, capacity: 1) { buffer in
-    return try body(buffer.baseAddress!)
+@_transparent
+@available(macOS 9999, iOS 9999, watchOS 9999, tvOS 9999, *)
+public func withUnsafeUninitializedMutablePointer<StorageType, ReturnType>(to type: StorageType.Type, _ body: (UnsafeMutablePointer<StorageType>) throws -> ReturnType) rethrows -> ReturnType {
+  return try withUnsafeUninitializedMutableBufferPointer(to: type, capacity: 1) { buffer in
+    return try body(buffer.baseAddress._unsafelyUnwrappedUnchecked)
   }
 }
 
